@@ -8,6 +8,7 @@ import configparser
 import argparse
 import logging
 import gzip
+import re
 
 # unit-tests:
 #  - на процент ошибок
@@ -109,7 +110,7 @@ class Reporter:
 
         return result, latest_date
 
-    def process_log(self, log_path):
+    def process_log(self, log_path, data_handler):
         def parse_nginx_log_line(line_str):
             methods = ('"GET', '"POST', '"PUT', '"DELETE', '"HEAD', '"CONNECT', '"OPTIONS', '"TRACE')
             http_suffix = " HTTP"
@@ -158,22 +159,16 @@ class Reporter:
                 # api/1/photogenic_banners/list/?server_name=WIN7RB4 HTTP/1.1" 200 12 "-"
                 # "Python-urllib/2.7" "-" "1498697422-32900793-4708-9752770" "-" 0.133
                 try:
-                    line_str = line.decode("ascii")
+                    line_str = line.decode("utf8")
                     url, request_time_sec = parse_nginx_log_line(line_str)
                     if url is None:
                         log.info("Skipped nginx log entry. Couldn't find a HTTP method in: %s" % line_str)
                         parse_errors += 1
                         continue
 
-                    try:
-                        stat = self._urls_stat[url]
-                    except KeyError:
-                        stat = Statistics()
-                        self._urls_stat[url] = stat
-
-                    stat.add_sample(request_time_sec)
-                    self._total_request_time += request_time_sec
-                    self._total_count += 1
+                    success = data_handler({"url": url, "request_time": request_time_sec})
+                    if not success:
+                        parse_errors += 1
 
                 except Exception as e:
                     log.error("Failed to parse log line '%s' in file %s. Exception: %s" % (line_str, log_path, str(e)))
@@ -185,7 +180,7 @@ class Reporter:
 
         return True
 
-    def write_report(self, report_path):
+    def build_report(self, report_path):
         # generate json data
         data = []
         for url, ut in self._urls_stat.items():
@@ -202,7 +197,7 @@ class Reporter:
         for item in data:
             item["time_sum"] = "%.3f" % item["time_sum"]
 
-        data = data[:config["REPORT_SIZE"]]
+        data = data[:config["REPORT_SIZE"]]  # cut out excess items
 
         table_json_text = json.dumps(data)
 
@@ -211,8 +206,28 @@ class Reporter:
             report_text = rtf.read()
         report_text = report_text.replace("$table_json", table_json_text)
 
+        os.makedirs(os.path.dirname(report_path), exist_ok=True) # create intermediate directories
         with open(report_path, "w") as rf:
             rf.write(report_text)
+
+    def count_request_time(self, data):
+        try:
+            url = data["url"]
+            request_time = data["request_time"]
+        except KeyError:
+            return False
+
+        try:
+            stat = self._urls_stat[url]
+        except KeyError:
+            stat = Statistics()
+            self._urls_stat[url] = stat
+
+        stat.add_sample(request_time)
+        self._total_request_time += request_time
+        self._total_count += 1
+
+        return True
 
     def run(self):
         latest_log_filename, log_date = Reporter.find_latest_log()
@@ -220,21 +235,22 @@ class Reporter:
             return
 
         report_path = os.path.join(config["REPORT_DIR"], "report-" + log_date.strftime("%Y.%m.%d") + ".html")
-        #if os.path.exists(report_path):
-        #    return
+        if os.path.exists(report_path):
+            return
 
         log_path = os.path.join(config["LOG_DIR"], latest_log_filename)
-        result = self.process_log(log_path)
+
+        result = self.process_log(log_path, self.count_request_time)
         if not result:
             return
 
-        self.write_report(report_path)
+        self.build_report(report_path)
 
 
 def main():
     try:
         parser = argparse.ArgumentParser(description="Parse nginx log files and build a report")
-        parser.add_argument('--config', default="")
+        parser.add_argument('--config', default="dflt.conf")
         args = parser.parse_args()
 
         Reporter(config, args.config).run()
