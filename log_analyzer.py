@@ -24,6 +24,8 @@ config = {
     "LOG_DIR": "./log"
 }
 
+log_line_re = re.compile(".+?(GET|POST|PUT|DELETE|HEAD|CONNECT|OPTIONS|TRACE) (.+?)(\?|HTTP).+ ([\d.]+)")
+
 
 class Statistics:
     def __init__(self):
@@ -112,35 +114,10 @@ class Reporter:
 
     def process_log(self, log_path, data_handler):
         def parse_nginx_log_line(line_str):
-            methods = ('"GET', '"POST', '"PUT', '"DELETE', '"HEAD', '"CONNECT', '"OPTIONS', '"TRACE')
-            http_suffix = " HTTP"
-
-            i1, method = -1, ""
-            for method in methods:
-                i1 = line_str.find(method, 30)
-                if i1 != -1:
-                    break
-            if i1 == -1:  # no HTTP method found
+            mo = log_line_re.match(line_str)
+            if mo == None:
                 return None, 0.0
-
-            i1 += len(method) + 1
-
-            # extract the URL
-            i2 = line_str.find("?", i1)
-            i3 = line_str.find(http_suffix, i1)
-            if i2 != -1:
-                i4 = min(i2, i3)
-            else:
-                i4 = i3
-            if i4 == -1:
-                return None, 0.0
-            url = line_str[i1:i4]
-
-            # extract the request time
-            i5 = line_str.rfind(" ")
-            request_time = float(line_str[i5 + 1:])
-
-            return url, request_time
+            return mo[2], float(mo[4])
 
         parse_errors_threshold = 0.4
 
@@ -150,8 +127,8 @@ class Reporter:
         with open_func(log_path, "r") as f:
             parse_errors = 0
 
-            for line in f:
-                if self._total_count > 10 and float(parse_errors) / self._total_count > parse_errors_threshold:
+            for line_count, line in enumerate(f):
+                if line_count > 10 and float(parse_errors) / line_count > parse_errors_threshold:
                     log.error("Too many parse errors, stopped parsing")
                     return False
 
@@ -161,7 +138,7 @@ class Reporter:
                 try:
                     line_str = line.decode("utf8")
                     url, request_time_sec = parse_nginx_log_line(line_str)
-                    if url is None:
+                    if url == None:
                         log.info("Skipped nginx log entry. Couldn't find a HTTP method in: %s" % line_str)
                         parse_errors += 1
                         continue
