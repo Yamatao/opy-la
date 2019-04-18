@@ -145,7 +145,7 @@ class Reporter:
         parse_errors_threshold = 0.4
 
         log_ext = os.path.splitext(log_path)[1]
-        open_func = {".gz": gzip.open}.get(log_ext, open)
+        open_func = gzip.open if log_ext == ".gz" else open
 
         with open_func(log_path, "r") as f:
             parse_errors = 0
